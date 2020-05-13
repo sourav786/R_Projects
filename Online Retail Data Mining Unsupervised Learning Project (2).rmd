@@ -1,0 +1,484 @@
+---
+title: "Online Retail - Unsupervised Learning"
+author: "Snehal Agrawal, Dikshita Barman, Huong Huynh, Zhu Wen, Saurav Gupta"
+output: html_document
+---
+
+# {.tabset .tabset-fade .tabset-pills}
+
+## Introduction
+
+Online retail is a transactional data set which contains all the transactions occurring between 01/12/2010 and 09/12/2011 for a UK-based and registered non-store online retail. The company mainly sells unique all-occasion gifts. Many customers of the company are wholesalers.
+
+We aim to segment the Customers based on RFM(Recency, Frequency, Monetary) so that the company can target its customers efficiently.
+
+*Recency* — How recently did the customer purchase? It means the number of days since a customer made the last purchase.  
+*Frequency* — How often do they purchase in a given period. So we can understand this value as for how often or how many a customer used the product of a company. The bigger the value is, the more engaged the customers are.   
+*Monetary* — How much do they spend? It is the total amount of money a customer spent in a given period. Therefore big spenders will be differentiated with other customers such as MVP or VIP.  
+
+We have taken the dataset from Kaggle, data source link [Online Retail](https://www.kaggle.com/hellbuoy/online-retail-k-means-hierarchical-clustering).    
+
+![RFM](http://d35fo82fjcw0y8.cloudfront.net/2018/03/01013508/Incontent_image.png)
+
+## Understanding the Data
+
+**Data Import**
+
+```{r}
+set.seed(123456)
+retail <- read.csv("~/OnlineRetail.csv")
+dim(retail)
+```
+
+
+We have 541909 observations and 8 columns
+
+**Packages Required**
+
+```{r warning=FALSE, message=FALSE}
+library(rmarkdown)
+library(DT)
+library(ggplot2)
+library(tidyverse)
+library(grid)
+library(knitr)
+library(dplyr)
+library(lubridate)
+#require(devtools)
+#install_github("Displayr/flipTime")
+library(flipTime)
+library(factoextra)
+library(gridExtra)
+library(fpc)
+library(tidyr)
+library(cluster)
+library(clValid)
+library(dendextend)
+```
+
+
+
+**Structure of the data**
+```{r}
+str(retail)
+```
+
+**Data Dictionary**
+
+| Variable                     | Type       | Description              |
+|:-----------------------------|:-----------|:-------------------------|
+| InvoiceNo         | factor | a 6-digit integral number uniquely assigned to each transaction |
+| StockCode    | factor | a 5-digit integral number uniquely assigned to each distinct product |
+| Description | factor | Product Name |
+| Quantity        | int | The quantities of each product (item) per transaction |
+| InvoiceDate       | factor | the day and time when each transaction was generated |
+| UnitPrice	   | number | Product price per unit in sterling |
+| CustomerID   | integer | a 5-digit integral number uniquely assigned to each customer |
+| Country       | factor | the name of the country where each customer resides |
+
+
+## Data Cleansing and Preparation
+
+
+Missing and null values:
+
+```{r}
+colSums(is.na(retail))
+```
+
+
+```{r}
+any(is.null(retail))
+```
+
+
+There are 135080 missing values and no null values in the dataset. But CustomerID is a key attribute in determining the RFM so we will omit the missing rows from our dataset.
+
+```{r}
+retail = na.omit(retail)
+dim(retail)
+```
+
+After removing the missing values, we have 406829 observations in the dataset.
+
+Replacing negative with NA Values:
+
+```{r}
+retail <- mutate(retail, Quantity = replace(Quantity, Quantity <= 0, NA),
+         UnitPrice = replace(UnitPrice, UnitPrice <= 0, NA))
+```
+
+
+Duplicate Values:
+
+```{r}
+dim(unique(retail))[1]
+```
+
+We have 401604 unique values because we have duplicated values in invoiceNo and customerID and we need to retain the duplicates.
+
+
+**Data Preparation**
+
+In order to perform analysis, we need to split the InvoiceDate into Day, Month, Year and Hour. Hence, we will first convert it to character and split the InvoiceDate records into weekOfDay, hourOfDay, month and year.
+
+```{r}
+retail$InvoiceDate <- as.character(retail$InvoiceDate)
+```
+
+```{r}
+# separate date and time components of invoice date
+retail$date <- sapply(retail$InvoiceDate, FUN = function(x) {strsplit(x, split = '[ ]')[[1]][1]})
+retail$time <- sapply(retail$InvoiceDate, FUN = function(x) {strsplit(x, split = '[ ]')[[1]][2]})
+# create month, year and hour of day variables
+retail$month <- sapply(retail$date, FUN = function(x) {strsplit(x, split = '[-]')[[1]][2]})
+retail$year <- sapply(retail$date, FUN = function(x) {strsplit(x, split = '[-]')[[1]][3]})
+retail$hourOfDay <- sapply(retail$time, FUN = function(x) {strsplit(x, split = '[:]')[[1]][1]})
+```
+
+We will convert the date variable to the appopriate class so we can do a bit more with it and create a column of TotalSales and dayOfWeek.
+
+```{r}
+retail$InvoiceDate <- AsDateTime(retail$InvoiceDate)
+retail = mutate(retail, TotalSales = Quantity*UnitPrice)
+retail$dayOfWeek <- wday(retail$InvoiceDate,label = TRUE)
+```
+
+That's given us a good dataframe to start performing some summary analyses. But before we move on to getting involved with product and customer segmentation, we'll turn the appropriate variables into factors:
+
+
+```{r}
+retail$Country <- as.factor(retail$Country)
+retail$month <- as.factor(retail$month)
+retail$year <- as.factor(retail$year)
+levels(retail$year) <- c(2010,2011)
+hourOfDay <- as.factor(retail$hourOfDay)
+retail$dayOfWeek <- as.factor(retail$dayOfWeek)
+```
+
+**Table View of the Data**:
+
+```{r}
+datatable(head(retail,100),extensions = 'FixedColumns', options = list(scrollX = TRUE, scrollY = "400px",fixedColumns = TRUE))
+```
+
+```{r echo=FALSE}
+retail = na.omit(retail)
+```
+
+
+To implement the RFM analysis, we need to further process the data set in by the following steps:
+
+* Find the most recent date for each ID , to get the Recency data
+* Calculate the quantity of transactions of a customer till present date, to get the Frequency data
+* Sum of Total Sales is the Monetary data.
+
+**Calculating Recency, Frequency and Monetary**
+
+```{r}
+max_date <- max(retail$InvoiceDate, na.rm = TRUE)
+retail = mutate(retail, Diff = difftime(max_date, InvoiceDate, units = "days"))
+retail$Diff <- floor(retail$Diff)
+```
+
+
+```{r}
+RFM <- summarise(group_by(retail,CustomerID),Frequency = n(), Monetary = sum(TotalSales), Recency = min(Diff))
+RFM$Recency <- as.numeric(RFM$Recency)
+RFM$Monetary[is.na(RFM$Monetary)] <- 0
+summary(RFM)
+head(RFM,10)
+```
+
+
+## Exploratory Data Analysis
+
+
+**Transactions By Year Analysis**
+
+```{r warning=FALSE}
+ggplot(retail, aes(year)) + geom_bar(aes(fill = "year"), width = 0.6) + labs(title = "2010 vs 2011", x = "Year", y = "Transactions") + guides(fill = FALSE) + scale_x_discrete(labels = c("2010" = "2010", "2011" = "2011")) + theme_classic() 
+```
+
+By comparing the total number of transactions in year 2010 and 2011, we find that people's consumption habits changed a lot. People became interested in shopping online.
+
+**Transactions By Country Analysis**
+
+```{r}
+Transactions_per_Country <- top_n(arrange(summarise(group_by(retail, Country), 'Number of Transcations' = n()), desc(`Number of Transcations`)), 10)
+  
+names(Transactions_per_Country) <- c("Country", "Number of Transactions")
+
+Transaction_per_Country_plot <- ggplot(head(Transactions_per_Country,5), aes(x = reorder(Country,-`Number of Transactions`), y = `Number of Transactions`)) + geom_bar(stat = 'identity', fill = "Steel Blue") +
+  geom_text(aes(label = `Number of Transactions`)) +
+  ggtitle('Top 5 Countries by Number of Transactions') + xlab('Countries') +
+  ylab('Number of Transactions') +
+  theme_minimal() 
+print(Transaction_per_Country_plot)
+```
+
+The above graphs displays that UK has the major portion of the customers with respect to other countries. Though Germany, Francec,EIRE and Spain ranked top 5, the number of transactions of these countries were far less than UK's.
+
+**Revenue By day of the week Analysis**
+
+```{r}
+ggplot(summarise(group_by(retail, dayOfWeek), revenue = sum(TotalSales)), aes(x = dayOfWeek, y = revenue)) + geom_bar(stat = 'identity', fill = 'Steel Blue') + labs(x = 'Day of Week', y = 'Revenue (£)', title = 'Revenue by Day of Week') + 
+  theme_minimal()
+```
+
+The above graph shows that Tuesday and Thursday are the days where more revenue were generated in comparison to other weekdays. Saturday seems to be off for orders.
+
+**Revenue By month of the year Analysis**
+
+```{r}
+ggplot(summarise(group_by(retail, month), revenue = sum(TotalSales)), aes(x = month, y = revenue)) + geom_bar(stat = 'identity', fill = 'Steel Blue') + labs(x = 'month', y = 'Revenue (£)', title = 'Revenue by month of year') + 
+  theme_minimal()
+```
+
+The perfect idea we get due to busy delivery system at the time of holidays, people tend to order in November for most of the holidays. The steep increase in sales in November can also be due to the sale season. Special sale for holidays is always considered as one of the best ideas.
+
+**Transactions By hour of the Day Analysis**
+
+```{r}
+ggplot(summarise(group_by(retail, hourOfDay), transactions = n_distinct(InvoiceNo)), aes(x = hourOfDay, y = transactions)) + geom_bar(stat = 'identity', fill = "Steel Blue") + labs(x = 'Hour of Day', y = 'transactions (£)', title = 'Transactions by hour of Day') + 
+  theme_minimal()
+```
+
+The above graph explains that between 10am till 3pm most of the orders are placed online.
+
+## K-Means Clustering
+
+#### Scaling the data
+
+```{r}
+RFM <- data.frame(RFM)
+row.names(RFM) <- RFM$CustomerID
+RFM <- RFM[,-1]
+RFM_scaled <- scale(RFM) 
+RFM_scaled <- data.frame(RFM_scaled)
+```
+
+
+#### Determining Optimal Cluster
+
+We will use two most popular methods to find an optimal number of clusters:
+
+* Elbow Method
+* Silhouette Method
+
+**1. Elbow Method**
+
+```{r}
+fviz_nbclust(RFM_scaled, kmeans, method = "wss") + geom_vline(xintercept = 3, linetype = 2)
+```
+
+The graph starts to bend at Cluster 3, hence we can determine that K=3 is the Optimal Cluster.
+
+**2. Average Silhoute Method**
+
+In short, the average silhouette approach measures the quality of a clustering. That is, it determines how well each object lies within its cluster. A high average silhouette width indicates a good clustering. The average silhouette method computes the average silhouette of observations for different values of k. The optimal number of clusters k is the one that maximizes the average silhouette over a range of possible values for k Square.
+
+We can use the silhouette function in the cluster package to compuate the average silhouette width. The following code computes this approach for 1-10 clusters. 
+
+```{r}
+fviz_nbclust(RFM_scaled, kmeans, method = "silhouette") 
+```
+
+From above graph we can visualize that k=4 is the Optimal number of Cluster and k=3 is the next best.  
+
+We will visualize kmeans clusters using both k=3 and k=4 for better understanding.  
+```{r}
+k3 <- kmeans(RFM_scaled, centers = 3, nstart = 25)
+k4 <- kmeans(RFM_scaled, centers = 4, nstart = 25)
+
+fviz_cluster(k3, geom = "point", data = RFM_scaled, pointsize = 0.2) + ggtitle("k = 3")
+fviz_cluster(k4, geom = "point", data = RFM_scaled, pointsize = 0.2) + ggtitle("k = 4")
+```
+
+We see that there are some overlapping of clusters for k=4, hence we confirm that k=3 is the best and optimal k.  
+
+After Comparing the above algorithms we have decided that K=3 is the optimal Cluster.
+
+Here is the summary statistics of each cluster for each of the variables.  
+
+```{r}
+res <- cbind(RFM, ClusterId = k3$cluster)
+res <- as.data.frame(res)
+```
+
+
+```{r fig.width=10}
+a <- ggplot(res, aes(x = ClusterId, y = Frequency, group = ClusterId, fill = as.factor(ClusterId))) + 
+  geom_boxplot(show.legend = FALSE) + theme_minimal() + scale_fill_brewer(palette = "Set2") 
+b <- ggplot(res, aes(x = ClusterId, y = Monetary, group = ClusterId, fill = as.factor(ClusterId))) + 
+  geom_boxplot(show.legend = FALSE) + theme_minimal() + scale_fill_brewer(palette = "Set2")
+c <- ggplot(res, aes(x = ClusterId, y = Recency, group = ClusterId, fill = as.factor(ClusterId))) + 
+  geom_boxplot(show.legend = FALSE) + theme_minimal() + scale_fill_brewer(palette = "Set2")
+grid.arrange(a,b,c, ncol = 3)
+```
+
+
+## Hierarchical Clustering 
+
+Hierarchical clustering is an alternative approach to k-means clustering for identifying groups in the dataset. It does not require us to pre-specify the number of clusters to be generated as is required by the k-means approach. Furthermore, hierarchical clustering has an added advantage over K-means clustering in that it results in an attractive tree-based representation of the observations, called a dendrogram.  
+
+#### Determining Optimal Cluster
+
+
+**1. Elbow Method**
+
+To perform the elbow method, we just need to change the second argument in fviz_nbclust to FUN = hcut for hierarchical clustering.
+
+```{r}
+fviz_nbclust(RFM_scaled, FUN = hcut, method = "wss") + geom_vline(xintercept = 3, linetype = 2)
+```
+
+**2. Average Silhouette Method**
+
+To perform the average silhouette method we follow a similar process.
+
+```{r}
+fviz_nbclust(RFM_scaled, FUN = hcut, method = "silhouette")
+```
+
+From above graph we can visualize that k=2 is the Optimal number of Cluster and k=3 is the next best.  
+
+So k=3 is the optimal number of clusters.  
+
+**Hierarchical Clustering**
+
+We can perform agglomerative HC with hclust. First we compute the dissimilarity values with dist and then feed these values into hclust and specify the agglomeration method to be used (i.e. “complete”, “average”, “single”, “ward.D”). We then plot the dendrogram.
+
+```{r fig.width=10}
+euclidian_dist <- dist(RFM_scaled, method = "euclidean")
+
+# Hierarchical clustering using Complete Linkage
+hc1 <- hclust(euclidian_dist, method = "single" )
+
+hc2 <- hclust(euclidian_dist, method = "complete" )
+
+hc3 <- hclust(euclidian_dist, method = "ward.D2" )
+
+hc4 <- hclust(euclidian_dist, method = "average" )
+
+m <- c( "average", "single", "complete", "ward")
+names(m) <- c( "average", "single", "complete", "ward")
+
+# function to compute coefficient
+ac <- function(x) {
+  agnes(RFM_scaled, method = x)$ac
+}
+
+map_dbl(m, ac)
+```
+
+The agnes$ac value gets the agglomerative coefficient, which measures the amount of clustering structure found (values closer to 1 suggest strong clustering structure). We see that all the four linkage methods are quite similar and close to 1, but Ward's method gives the best result. Also, in general, Complete and Ward's linkage are preferred over others.  
+
+To confirm, we visualize both the dendrograms - Complete and Ward's.  
+
+
+```{r}
+hc2 <- as.dendrogram(hc2)
+cd = color_branches(hc2,k = 3)
+plot(cd)
+
+hc3 <- as.dendrogram(hc3)
+cd = color_branches(hc3,k = 3)
+plot(cd)
+```
+
+We observe that the Complete linkage creates clusters for each outliers and thus creates 2 clusters each for 2 outlier which would not provide good result. We will go with Ward's method.  
+
+Here is the summary statistics of each cluster for each of the variables.  
+
+```{r}
+ward.clust = cutree(hc3,k = 3)
+res1 <- cbind(RFM, ClusterId = ward.clust)
+res1 <- as.data.frame(res1)
+```
+
+
+```{r fig.width=10}
+a <- ggplot(res1, aes(x = ClusterId, y = Frequency, group = ClusterId, fill = as.factor(ClusterId))) + 
+  geom_boxplot(show.legend = FALSE) + theme_minimal() + scale_fill_brewer(palette = "Set2") 
+b <- ggplot(res1, aes(x = ClusterId, y = Monetary, group = ClusterId, fill = as.factor(ClusterId))) + 
+  geom_boxplot(show.legend = FALSE) + theme_minimal() + scale_fill_brewer(palette = "Set2")
+c <- ggplot(res1, aes(x = ClusterId, y = Recency, group = ClusterId, fill = as.factor(ClusterId))) + 
+  geom_boxplot(show.legend = FALSE) + theme_minimal() + scale_fill_brewer(palette = "Set2")
+grid.arrange(a,b,c, ncol = 3)
+```
+
+
+
+## Conclusions
+Although both the methods did not give too good results, but k-means Clustering provided better results for this dataset.  
+
+To confirm that k-means is better, we do Dunn's Index test.  
+
+```{r}
+dunn_km = dunn(clusters = k3$cluster, Data = RFM_scaled)
+dunn_km
+memb_ward = cutree(hc3, k = 3) 
+dunn_ward <- dunn(clusters = memb_ward, Data = RFM_scaled)
+dunn_ward
+```
+
+We see that the Dunn's Index for k-means is higher than hierarchical clustering indicating K-means gives better Clustering results.  
+
+```{r}
+sil_k3 <- silhouette(k3$cluster, euclidian_dist)
+summary(sil_k3)
+sil_hc <- silhouette(memb_ward, euclidian_dist)
+summary(sil_hc)
+```
+
+The Silhouette Width (mean of all silhouette values) is higher for K-means than Hierarchical Clustering which confirms that the k-means cluster yields better results for this dataset.  
+
+```{r out.width=c('50%', '50%'), fig.show='hold'}
+table(k3$cluster)
+table(ward.clust)
+```
+
+
+
+```{r out.width=c('50%', '50%'), fig.show='hold'}
+fviz_cluster(k3, data = RFM_scaled, geom = "point") + ggtitle("K-means Clustering")
+fviz_cluster(list(data = RFM_scaled, cluster = ward.clust), geom = "point") + ggtitle("Hierarchical Clustering")
+```
+
+We see there are some overlapping for Hierarchical clusters, therefore, we choose K-means clusters as our final clusters.  
+
+```{r}
+#K-means Clustering results
+aggregate(res,by = list(res$ClusterId),FUN = mean)
+#Hierarchical clustering results
+aggregate(res1,by = list(res1$ClusterId),FUN = mean)
+```
+
+
+**Inferences:**
+
+**K-Means Clustering with 3 Clusters**
+
+* Customers in Cluster 1 are the customers with high amount of transactions, are frequent buyers, and recent buyers as compared to other customers, hence most important from business point of view.
+* Customers in Cluster 2 are the customers with average amount of transactions as compared to other customers.
+* Customers in Cluster 3 are the customers with least amount of transactions, are infrequent buyers, and not recent buyers and hence least of importance from business point of view.
+
+**Hierarchical Clustering with 3 Clusters**
+
+* Customers in Cluster 1 are the customers with average amount of transactions as compared to other customers.
+* Customers in Cluster 2 are the customers with least amount of transactions, are infrequent buyers, and not recent buyers and hence least of importance from business point of view.
+* Customers in Cluster 3 are the customers with high amount of transactions, are frequent buyers, and recent buyers as compared to other customers, hence most important from business point of view.
+
+
+
+
+
+
+
+
+
+
+
+
+
