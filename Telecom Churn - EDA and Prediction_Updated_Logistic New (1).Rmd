@@ -1,0 +1,515 @@
+---
+title: "Telecom Churn - EDA and Prediction"
+output: html_document
+---
+
+With the rapid growth of the telecommunications industry, the service providers are more inclined towards customer base expansion. In order to fulfill the need to thrive in a competitive world, maintaining current customers has become a huge challenge. The cost of attracting a new customer is said to be much higher than that of maintaining the current one. Hence, it is important for the telecom companies to use advanced analytics to consider consumer behavior and forecast in-turn customer interaction as whether they would exit the business or not. 
+This collection of data provides information regarding a telecom company's level of customers. Specific characteristics are reported for each customer relating to the services used.  
+
+We will be performing various steps to arrive at  model to predict the future churns in this industry. 
+
+# {.tabset .tabset-fade .tabset-pills}
+
+## Introduction
+
+Customer churns happen when consumers or subscribers cease business with a company or service. This is also known as consumer turnover or defection. Many service providers, such as telecommunications companies, internet companies, or insurance firms often use customer churn analysis as one of the main business indicators to maintain the customer satisfaction.  
+
+<br>
+
+<h4>About the data</h4>
+*Target* variable is called Churn - it represents customers who left.  
+*Predictor* variables include all the remaining variables.  
+
+<br>
+
+<h4>Objective</h4>
+This the demonstration in R to analyze all relevant customer data and predict Customer churn.  
+
+<br>
+
+<h4>Insights</h4>
+Some possible insights could be -  
+
+1. What variables are contributing to customer churn?
+2. Who are the customers more likely to churn?
+3. What actions can be taken to stop them from leaving?
+
+## Data Import
+
+<h2> Data Import </h2>
+***
+We have taken the dataset from Kaggle, data source link [Customer Churn](https://www.kaggle.com/barun2104/telecom-churn).    
+We are importing the Telecom Churn data and converting the response variable to factors. 
+
+```{r warning=FALSE, message=FALSE}
+library(rmarkdown)
+library(data.table)
+library(ggplot2)
+library(GGally)
+library(grid)
+library(gridExtra)
+library(corrplot)
+library(tidyverse)
+library(tidyr)
+library(caret)
+library(knitr)
+library(mgcv)
+library(nnet)
+library(NeuralNetTools)
+library(e1071)
+library(verification)
+library(glmnet)
+library(dplyr)
+library(ROCR)
+set.seed(12345)
+```
+
+```{r}
+telecom <- read.csv("C:/Users/saura/Desktop/Teclo/teclo/telecom_churn.csv")
+telecom$Churn <- factor(telecom$Churn)
+dim(telecom)
+str(telecom)
+```
+
+There are 3333 records of customer and 11 variables.  
+
+We will convert variables ContractRenewal and DataPlan to factors as well since it takes only two levels of values, namely "0" and "1".
+
+```{r}
+telecom$DataPlan <- factor(telecom$DataPlan)
+telecom$ContractRenewal <- factor(telecom$ContractRenewal)
+```
+
+Here is the data.
+
+```{r}
+paged_table(telecom)
+```
+
+
+
+## Data Cleaning and Split
+
+<h2>Data Cleaning</h2>
+***
+<h3>Missing Values</h3>
+We are checking if there are any missing values in any of the variables.
+
+```{r}
+colSums(is.na(telecom))
+print(paste(sum(complete.cases(telecom)),"Complete cases!"))
+any(is.null(telecom))
+```
+
+We see that there are no missing values in any of the variables and there are 3333 complete cases. 
+Also, there are no invalid or spurious data in the dataset. 
+
+<h3>Duplicate Records</h3>
+We are checking if there are duplicate records in the dataset which is redundant and hence needs to be removed. 
+
+```{r}
+dim(unique(telecom))[1]
+```
+
+There is no duplicate records in the dataset
+
+<h2>Data Split</h2>
+***
+We are splitting the data into training and testing set with 80:20 percentage of data. We will use the trainings set to train the model and testing set to validate the model. 
+
+```{r}
+index <- sample(nrow(telecom),nrow(telecom)*0.80)
+telecom_train = telecom[index,]
+telecom_test = telecom[-index,]
+```
+
+<br>
+
+
+## Data Dictionary
+
+<h2>Data Dictionary</h2>
+***
+| Variable                     | Type       | Description              |
+|:-----------------------------|:-----------|:-------------------------|
+| Churn           | factor | 1 if customer cancelled service, 0 if not |
+| AccountWeeks    | integer | number of weeks customer has had active account |
+| ContractRenewal | factor | 1 if customer recently renewed contract, 0 if not |
+| DataPlan        | factor | 1 if customer has data plan, 0 if not |
+| DataUsage       | double | gigabytes of monthly data usage |
+| CustServCalls   | integer | number of calls into customer service |
+| DayMins         | double | average daytime minutes per month |
+| DayCalls        | integer | average number of daytime calls |
+| MonthlyCharge   | double | average monthly bill |
+| OverageFee      | double | largest overage fee in last 12 months |
+| RoamMins        | double | average number of roaming minutes |
+
+## EDA
+
+<h3>Stayed Vs Cancelled</h3>
+
+In the bar graph below, we can see that the number of customers' turnover is made up 1/4 of the customers deciding to stay with their current service provider.  
+```{r warning=FALSE}
+ggplot(telecom, aes(Churn)) + geom_bar(aes(fill = Churn), width = 0.6) + labs(title = "Stayed vs Cancelled", subtitle = "From Customer Churn dataset", x = "Customer Churn", y = "Count") + guides(fill = FALSE) + scale_x_discrete(labels = c("0" = "Stayed", "1" = "Cancelled")) + theme_classic() 
+```
+
+We can see from the above bar graph that we have high count of customers who did not cancel their service.
+
+<h3>Correlation between variables</h3>
+
+```{r echo=FALSE}
+telecom$DataPlan <- as.numeric(telecom$DataPlan)
+telecom$ContractRenewal <- as.numeric(telecom$ContractRenewal)
+```
+
+
+```{r}
+corrplot(cor(telecom[,-1]), type = "lower", method = "number")
+```
+
+```{r echo=FALSE}
+telecom$DataPlan <- factor(telecom$DataPlan)
+telecom$ContractRenewal <- factor(telecom$ContractRenewal)
+```
+
+We can see the correlation coefficient of 0.95 between Data Usage and Data Plan. This indicates a strong positive linear relationship. It is a logical statement because customer who has data plan tends to use more data. Also, looking at the correlation between Monthly Charge and Data Plan or Monthly Charge and Data Usage, the coefficients are 0.74 and 0.78 respectively. These are strong linear relationships. Lastly, Days Mins and Monthly Charge has 0.57 correlation coefficent showing a moderate positive linear relationship.
+
+
+```{r warning=FALSE, message=FALSE}
+ggpairs(telecom)
+```
+The plot shows that DayMins, AverageFee, RoamingMinutes are normally ditributed.AccountWeeks, Data Usage and Monthy Charges are right skewed and DailyCalls is left skewed.
+
+<h3>Relation between Churn and Categorical variables</h3>
+
+```{r out.width=c('50%', '50%'), fig.show='hold'}
+ggplot(telecom, aes(Churn)) + geom_bar(aes(fill = ContractRenewal))
+ggplot(telecom, aes(Churn)) + geom_bar(aes(fill = DataPlan))
+```
+
+We can see that the the count of customers who churned did not renew their contract but they have active data plan.
+
+<h3>Relation between Churn and Numerical variables and Outliers</h3>
+
+```{r warning=FALSE, echo=FALSE}
+a <- ggplot(telecom, aes(x= telecom$Churn, y= telecom$AccountWeeks, fill = factor(telecom$Churn))) + geom_boxplot() + theme(legend.position = "none") +labs(x="Churn", y="Account Weeks")
+
+d<- ggplot(telecom, aes(x= telecom$Churn, y= telecom$DataUsage , fill = factor(telecom$Churn))) + geom_boxplot() + theme(legend.position = "none") +labs(x="Churn", y="Data usage")
+
+e<- ggplot(telecom, aes(x= telecom$Churn, y= telecom$CustServCalls, fill = factor(telecom$Churn))) + geom_boxplot() + theme(legend.position = "none") +labs(x="Churn", y="CustServCalls")
+
+f<- ggplot(telecom, aes(x= telecom$Churn, y= telecom$DayMins, fill = factor(telecom$Churn))) + geom_boxplot() + theme(legend.position = "none") +labs(x="Churn", y="Day Mins")
+
+g<- ggplot(telecom, aes(x= telecom$Churn, y= telecom$DayCalls, fill = factor(telecom$Churn))) + geom_boxplot() + theme(legend.position = "none") +labs(x="Churn", y="Day Calls")
+
+h<- ggplot(telecom, aes(x= telecom$Churn, y= telecom$MonthlyCharge, fill = factor(telecom$Churn))) + geom_boxplot() + theme(legend.position = "none") +labs(x="Churn", y="Monthly Charge")
+
+i<- ggplot(telecom, aes(x= telecom$Churn, y= telecom$OverageFee, fill = factor(telecom$Churn))) + geom_boxplot() + theme(legend.position = "none") +labs(x="Churn", y="Overage Fee ")
+
+j<- ggplot(telecom, aes(x= telecom$Churn, y= telecom$RoamMins, fill = factor(telecom$Churn))) + geom_boxplot() + theme(legend.position = "none") +labs(x="Churn", y="Roam Mins")
+grid.arrange(a,d,e,f,g,h,i,j, ncol=4)
+```
+
+- Account Weeks + Day Calls: Customers decided to stay with the current service carrier and those chose to opt out the service have used almost the same number of weeks and Day calls. The population in two groups are almost in normal distribution. 
+- Data Usage: Consumers in group 0 used more data than group 1, however group 1 has more outliers than the other group. This means that customers who decided to leave the service provider does not show the trend on how much they use data. 
+-Customer Call: Consumers in group 1 who chose to terminate the serive shows they have spend much times on calling customer service. Consumers in group 0 are skew positively. 
+- Monthlt Charge + Overage Fee +Roam Mins: In these catagories, there is not much differece between both groups. Consumers in group 1 has slightly higher number in monthly charge and overage fee. 
+- Day Mins: Consumer in group 1 shows to spend more time in day calls. 
+
+
+## Logistic Regression
+
+<h2>Logistic Regression</h2>
+
+To begin, a logistic regression model containing all variables is fit to our training data, this model use the standard logit link function. The same full model was also fit trying probit link functions. 
+
+Train a logistic regression model with all predictor variables:
+
+```{r}
+telecom.glm0 <- glm(Churn~., family=binomial, data=telecom_train)
+summary(telecom.glm0)
+```
+
+We see that some of the variables has p-valus < 0.05 and therefore, plays a significant role in the model.  
+
+Model performance:
+
+```{r}
+AIC(telecom.glm0)
+BIC(telecom.glm0)
+telecom.glm0$deviance
+```
+
+AUC for training data:  
+```{r}
+pred.glm0.train <- predict(telecom.glm0, type="response")
+pred0 <- prediction(pred.glm0.train, telecom_train$Churn)
+unlist(slot(performance(pred0, "auc"), "y.values"))
+class.glm0.train<- (pred.glm0.train>0.5)*1
+```
+
+AUC for testing data:  
+```{r}
+pred.glm0.test <- predict(telecom.glm0, telecom_test, type="response")
+pred0 <- prediction(pred.glm0.test, telecom_test$Churn)
+unlist(slot(performance(pred0, "auc"), "y.values"))
+class.glm0.test<- (pred.glm0.test>0.5)*1
+```
+
+Missclassification Rate for training data:
+
+```{r}
+mean(telecom_test$Churn != class.glm0.test)
+```
+
+Missclassification Rate for testing data:
+
+```{r}
+mean(telecom_train$Churn != class.glm0.train)
+```
+
+We see that the missclassification rate of the full model is not too good so to improve upon the model, we perform the variable selection.  
+
+### **Variable Selection**
+
+In order to see if we could improve upon a simple model including all possible variables, various variable selection procedures were used including stepwise selection using both AIC and BIC criteria and LASSO.
+
+**AIC-stepwise**
+We build the model using AIC stepwise.
+
+```{r results="hide"}
+model_aic <- step(telecom.glm0)
+```
+
+```{r}
+summary(model_aic)
+```
+
+AUC for training data:  
+
+```{r}
+pred.aic.train <- predict(model_aic, type="response")
+pred_aic <- prediction(pred.aic.train, telecom_train$Churn)
+auc_aic_train<-unlist(slot(performance(pred_aic, "auc"), "y.values"))
+auc_aic_train
+class.glm0.train.aic<- (pred.aic.train>0.5)*1
+```
+
+AUC for testing data: 
+```{r}
+pred.aic.test <- predict(model_aic, telecom_test, type="response")
+pred_aic1 <- prediction(pred.aic.test, telecom_test$Churn)
+auc_aic_test<-unlist(slot(performance(pred_aic1, "auc"), "y.values"))
+auc_aic_test
+class.glm0.test.aic<- (pred.aic.test>0.5)*1
+```
+
+Missclassification Rate for training data:
+```{r}
+MR_aic_train<-mean(telecom_train$Churn != class.glm0.train.aic)
+MR_aic_train
+```
+  
+Missclassification Rate for testing data:
+```{r}
+MR_aic_test<-mean(telecom_test$Churn != class.glm0.test.aic)
+MR_aic_test
+```
+  
+**BIC-stepwise**
+We build the model using BIC stepwise.
+```{r results="hide"}
+model_bic <- step(telecom.glm0, k=log(nrow(telecom_train)))
+```
+
+```{r}
+summary(model_bic)
+```
+
+
+AUC for training data: 
+
+```{r}
+pred.bic.train <- predict(model_bic, type="response")
+pred_bic <- prediction(pred.bic.train, telecom_train$Churn)
+unlist(slot(performance(pred_bic, "auc"), "y.values"))
+class.glm0.train.bic<- (pred.bic.train>0.5)*1
+```
+
+AUC for testing data: 
+```{r}
+pred.bic.test <- predict(model_bic, telecom_test, type="response")
+pred_bic1 <- prediction(pred.bic.test, telecom_test$Churn)
+unlist(slot(performance(pred_bic1, "auc"), "y.values"))
+class.glm0.test.bic<- (pred.bic.test>0.5)*1
+```
+
+Missclassification Rate for training data:
+
+```{r}
+mean(telecom_train$Churn != class.glm0.train.bic)
+```
+
+Missclassification Rate for testing data:
+
+```{r}
+mean(telecom_test$Churn != class.glm0.test.bic)
+```
+**Model Performance- Logistic Regression**
+
+Given that all three models AIC and BIC model is the same and is better than the full model in terms of missclassification rate of the testing data. As the model fit using AIC (same as BIC in this case) (hereafter the ‘AIC model’) has the smallest MR we considered it our best model.
+
+In order to determine if our model has sufficient ability to discriminate between true positives and false positives, we plotted the ROC curve. Figure 1 displays the ROC curve for the AIC model based on our training data and Figure 2 displays the ROC curve for the AIC model based on the remaining 20% testing data.
+
+ROC curve for training data:
+```{r}
+pred <- prediction(pred.aic.train, telecom_train$Churn)
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, colorize=TRUE)
+```
+
+ROC curve for testing data:
+```{r}
+pred <- prediction(pred.aic.test, telecom_test$Churn)
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, colorize=TRUE)
+```
+
+
+**Conclusion- Logistic Regression**
+
+The final model contains 6 predictors. The in-sample and out-of-sample performance of this model is comparable. The model can accurately predict the churn classification for more than 88% of the customers in the data set.
+
+
+## Neural Network
+
+<h2>Neural Network</h2>
+
+Our goal here is to develop a neural network to determine if a customer cancels the telecom service or not.  
+
+
+We now generate the error of the neural network model, along with the weights between the inputs, hidden layers, and outputs.
+
+```{r echo=FALSE}
+normalize <- function(x) {
+  return((x - min(x)) / (max(x) - min(x)))
+}
+telecom$DataPlan <- as.numeric(telecom$DataPlan)
+telecom$ContractRenewal <- as.numeric(telecom$ContractRenewal)
+telecom$Churn <- as.numeric(telecom$Churn)
+
+maxmindf <- as.data.frame(lapply(telecom, normalize))
+
+telecom$DataPlan <- factor(telecom$DataPlan)
+telecom$ContractRenewal <- factor(telecom$ContractRenewal)
+telecom$Churn <- factor(telecom$Churn)
+
+index <- sample(nrow(maxmindf),nrow(maxmindf)*0.80)
+telecom_train = maxmindf[index,]
+telecom_test = maxmindf[-index,]
+```
+
+```{r}
+library(neuralnet)
+nn <- neuralnet(Churn ~ ., data = telecom_train, hidden = c(2,1),act.fct = "logistic", linear.output = FALSE,stepmax = 1e+08, likelihood = TRUE)
+nn$result.matrix
+```
+
+
+We create a neural network with 2 hidden layers and our neural network looks like:  
+
+```{r}
+plot(nn, rep = "best")
+```
+
+<h4>In-sample performance</h4>
+
+We get the confusion matrix for the training data:
+```{r warning=FALSE, message=FALSE}
+temp_train <- subset(telecom_train, select = c("AccountWeeks","ContractRenewal","DataPlan","DataUsage","CustServCalls","DayMins","DayCalls","MonthlyCharge","OverageFee","RoamMins"))
+nn.results1 <- compute(nn, temp_train)
+results1 <- data.frame(actual = telecom_train$Churn, prediction = nn.results1$net.result)
+prob.result.train <- nn.results1$net.result
+roundedresults1 <- sapply(results1,round,digits = 0)
+roundedresultsdf1 = data.frame(roundedresults1)
+attach(roundedresultsdf1)
+confusion_matrix_train <- table(actual,prediction)
+confusion_matrix_train
+```
+
+Missclassification rate(MR) for the training data:
+
+```{r}
+MR_train <- (confusion_matrix_train[1,2] + confusion_matrix_train[2,1])/nrow(telecom_train)
+MR_train
+```
+
+
+ROC curve for training data and AUC:
+```{r}
+nn.pred = ROCR::prediction(prob.result.train, telecom_train$Churn)
+pref <- performance(nn.pred, "tpr", "fpr")
+plot(pref, colorize=TRUE)
+auc_train<-unlist(slot(ROCR::performance(nn.pred, "auc"),"y.values"))
+auc_train
+```
+
+
+<h4>Out-of-sample performance</h4>
+We get the confusion matrix for the testing data:
+```{r warning=FALSE, message=FALSE}
+temp_test <- subset(telecom_test, select = c("AccountWeeks","ContractRenewal","DataPlan","DataUsage","CustServCalls","DayMins","DayCalls","MonthlyCharge","OverageFee","RoamMins"))
+nn.results <- compute(nn, temp_test)
+results <- data.frame(actual = telecom_test$Churn, prediction = nn.results$net.result)
+prob.result.test <- nn.results$net.result
+roundedresults <- sapply(results,round,digits = 0)
+roundedresultsdf = data.frame(roundedresults)
+attach(roundedresultsdf)
+confusion_matrix_test <- table(actual,prediction)
+confusion_matrix_test
+```
+
+Missclassification rate(MR) for the testing data:
+
+```{r}
+MR_test <- (confusion_matrix_test[1,2] + confusion_matrix_test[2,1])/nrow(telecom_test)
+MR_test
+```
+
+ROC curve for testing data and AUC:
+```{r}
+nn.pred = ROCR::prediction(prob.result.test, telecom_test$Churn)
+pref <- performance(nn.pred, "tpr", "fpr")
+plot(pref, colorize=TRUE)
+auc_test<-unlist(slot(ROCR::performance(nn.pred, "auc"),"y.values"))
+auc_test
+```
+
+
+## Conclusion
+We will compare the AUC and missclassification rate (MR) of the training and testing data of both the approaches - Logistic regression and Neural Network. The lower the MR, the better the accuracy of prediction of the model.  The higher the AUC, the better the model.  
+
+
+
+**Logistic Regression**
+
+```{r echo=FALSE}
+smoke<-c(MR_aic_train, MR_aic_test, auc_aic_train, auc_aic_test)
+smoke <- as.table(smoke)
+rownames(smoke)<-c("MR for training", "MR for testing", "AUC for training", "AUC for testing")
+smoke
+```
+
+**Neural Network**
+
+```{r echo=FALSE}
+smoke<-c(MR_train, MR_test, auc_train, auc_test)
+smoke <- as.table(smoke)
+rownames(smoke)<-c("MR for training", "MR for testing", "AUC for training", "AUC for testing")
+smoke
+```
+
+
+We can see that the Neural Network performs much better than the Logistic model here and therefore, we will choose the neural network as our final model for predicting the new data in the future.  
+
+<br>
